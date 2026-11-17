@@ -1,3 +1,5 @@
+<img src="docs/assets/logo-400.png" width="112" align="right" alt="AdiButtonAuras Forever logo">
+
 # AdiButtonAuras Forever
 
 An unofficial port of [AdiButtonAuras](https://github.com/AdiAddons/AdiButtonAuras) 11.0.4 to

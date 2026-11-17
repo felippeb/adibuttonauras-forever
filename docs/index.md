@@ -3,6 +3,8 @@ layout: default
 title: The Chronicle
 ---
 
+<img src="assets/logo-400.png" width="88" alt="AdiButtonAuras Forever">
+
 # The Chronicle of the Dimmed Buttons
 
 *A retail addon, a Wrath-era paladin, and a client that answers "no".*
