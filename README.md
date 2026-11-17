@@ -63,9 +63,11 @@ Every probe line is also mirrored into `ABAForeverProbe` (SavedVariables) and fl
 
 ## Documentation
 
+- [The chronicle](https://felippeb.github.io/adibuttonauras-forever/) — the story, for humans (nice to share)
 - [Technical brief](docs/technical-brief.md) — failure modes, cache state machine, observability, takeaways
 - [Port notes](docs/port-notes.md) — the chronological patch log
-- [The chronicle](docs/index.md) — the story, for humans
+
+The chronicle is also readable in-repo at [docs/index.md](docs/index.md).
 
 ## Compatibility
 
