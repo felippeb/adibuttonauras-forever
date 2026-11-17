@@ -1,0 +1,29 @@
+AdiButtonAuras Forever
+======================
+
+This repository is a modified version of **AdiButtonAuras 11.0.4**.
+
+Original project: https://github.com/AdiAddons/AdiButtonAuras
+Original license: GNU General Public License v3.0 (see LICENSE)
+Original authors: the AdiAddons project contributors.
+
+This is an unofficial port to WoW Forever (interface 16001, game version 1.60.1).
+It is not affiliated with or endorsed by the original authors, Blizzard
+Entertainment, or CurseForge.
+
+Modifications, 2026-11-16, by felippeb:
+
+- added `Forever.lua`, a compatibility layer loaded before the embedded libraries;
+- rewrote the aura cache for restricted and secret reads: freeze the last good
+  snapshot, merge while restricted, replace when the client is readable;
+- added remembered own casts for auras the client hides in combat;
+- added Forever-specific paladin rules (seals, blessings, auras, Righteous Fury);
+- added seal family tracking and stale-seal suppression after a swap;
+- self-buffs match by aura id or normalized name and include buffs from other players;
+- added `/abaforever` diagnostics, SavedVariables probe output, and error capture;
+- target-debuff rules (Judgement, Consecration) were intentionally removed: enemy
+  auras are unreadable by addons in combat on this client, so any timer would be a
+  guess. The buttons stay neutral instead.
+
+The modified work is distributed under GPL-3.0. The corresponding source is this
+repository.

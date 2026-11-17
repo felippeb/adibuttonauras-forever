@@ -1,0 +1,123 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label (e.g. 11.0.4-forever.2)"
+        required: true
+      release_type:
+        description: "CurseForge release type"
+        type: choice
+        options: [alpha, beta, release]
+        default: alpha
+
+permissions:
+  contents: write # GitHub release asset only
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version: $VERSION"
+
+      - name: Check repository configuration
+        run: |
+          test -n "${{ vars.CURSEFORGE_PROJECT_ID }}" || {
+            echo "::error::set repository variable CURSEFORGE_PROJECT_ID"; exit 1; }
+          test -n "${{ vars.CF_GAME_VERSIONS }}" || {
+            echo "::error::set repository variable CF_GAME_VERSIONS"; exit 1; }
+          test -n "${{ secrets.CURSEFORGE_API_TOKEN }}" || {
+            echo "::error::set secret CURSEFORGE_API_TOKEN"; exit 1; }
+
+      # CI proof that every Lua file still parses, instead of "it worked once".
+      - name: Lint Lua
+        run: |
+          python -m pip install --quiet luaparser
+          python - <<'PY'
+          from luaparser import ast
+          import pathlib, sys
+
+          bad = []
+          for path in pathlib.Path(".").rglob("*.lua"):
+              if ".git" in path.parts:
+                  continue
+              try:
+                  ast.parse(path.read_text(encoding="utf-8-sig"))
+              except Exception as exc:
+                  bad.append(f"{path}: {exc}")
+
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("all Lua files parse")
+          PY
+
+      # Same script used locally, so packaging cannot drift between the two.
+      - name: Build zip
+        run: pwsh -NoProfile -File ./build-zip.ps1 -Version "${{ steps.v.outputs.version }}" -OutDir release
+
+      - name: Inspect archive
+        run: |
+          set -euo pipefail
+          unzip -l "release/AdiButtonAuras-${{ steps.v.outputs.version }}.zip" | sed -n '1,15p'
+          unzip -Z1 "release/AdiButtonAuras-${{ steps.v.outputs.version }}.zip" |
+            awk -F/ '{print $1}' | sort -u | grep -v '^$' | tee /tmp/roots
+          test "$(wc -l < /tmp/roots)" -eq 2
+          grep -qx "AdiButtonAuras" /tmp/roots
+          grep -qx "AdiButtonAuras_Config" /tmp/roots
+
+      - name: Upload to CurseForge
+        env:
+          CF_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+          PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          GAME_VERSIONS: ${{ vars.CF_GAME_VERSIONS }}
+          VERSION: ${{ steps.v.outputs.version }}
+          RELEASE_TYPE: ${{ inputs.release_type || (contains(github.ref_name, '-beta') && 'beta' || 'release') }}
+        run: |
+          set -euo pipefail
+
+          test -s CHANGELOG.md || { echo "::error::CHANGELOG.md is required"; exit 1; }
+
+          META=$(jq -n \
+            --arg name "$VERSION" \
+            --arg rt "$RELEASE_TYPE" \
+            --rawfile cl CHANGELOG.md \
+            --argjson gv "[$GAME_VERSIONS]" \
+            '{displayName:$name, releaseType:$rt, changelog:$cl,
+              changelogType:"markdown", gameVersions:$gv}')
+
+          code=$(curl -sS -o cf-response.json -w '%{http_code}' \
+            -H "X-Api-Token: $CF_TOKEN" \
+            -F "metadata=$META" \
+            -F "file=@release/AdiButtonAuras-$VERSION.zip" \
+            "https://wow.curseforge.com/api/projects/$PROJECT_ID/upload-file")
+
+          echo "CurseForge HTTP $code"
+          cat cf-response.json
+          test "$code" = "200"
+
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          generate_release_notes: true

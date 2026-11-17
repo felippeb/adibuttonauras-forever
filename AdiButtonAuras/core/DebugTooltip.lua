@@ -1,0 +1,163 @@
+--[[
+AdiButtonAuras - Display auras on action buttons.
+Copyright 2013-2023 Adirelle (adirelle@gmail.com)
+All rights reserved.
+
+This file is part of AdiButtonAuras.
+
+AdiButtonAuras is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+AdiButtonAuras is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with AdiButtonAuras. If not, see <http://www.gnu.org/licenses/>.
+--]]
+
+local addonName, addon = ...
+
+local _G = _G
+local C_UnitAuras = _G.C_UnitAuras
+local Enum = _G.Enum
+local BreakUpLargeNumbers = _G.BreakUpLargeNumbers
+local GetActionInfo = _G.GetActionInfo
+local GetActionText = _G.GetActionText
+local GetItemInfo = (_G.ABACompat and _G.ABACompat.GetItemInfo) or _G.GetItemInfo
+local GetItemSpell = (_G.ABACompat and _G.ABACompat.GetItemSpell) or _G.GetItemSpell
+local GetMacroInfo = _G.GetMacroInfo
+local GetMacroItem = _G.GetMacroItem
+local GetMacroSpell = _G.GetMacroSpell
+local GetPetActionInfo = _G.GetPetActionInfo
+local select = _G.select
+local TooltipDataProcessor = _G.TooltipDataProcessor
+
+-- Forever: this client has no TooltipDataProcessor (or no tooltip data types).
+-- The whole file is tooltip debugging; skip it instead of failing to load.
+if not TooltipDataProcessor or not (Enum and Enum.TooltipDataType) then
+	return
+end
+
+local function IsDisabled()
+	return not (addon.db and addon.db.profile.debuggingTooltip)
+end
+
+local function AddSpellInfo(tooltip, source, id, addEmptyLine)
+	if not id or IsDisabled() or tooltip:IsForbidden() then return end
+
+	local spell = _G.ABACompat.GetSpellInfoTable(id)
+	if not spell then return end
+
+	if addEmptyLine then
+		tooltip:AddLine(" ")
+	end
+
+	tooltip:AddDoubleLine("Spell id ("..source.."):", BreakUpLargeNumbers(spell.spellID))
+	tooltip:Show()
+end
+
+local function AddItemInfo(tooltip, id, addEmptyLine)
+	if not id or IsDisabled() then return end
+	local name, link = GetItemInfo(id)
+	if not name or type(link) ~= "string" then return end
+	if addEmptyLine then
+		tooltip:AddLine(" ")
+	end
+	tooltip:AddDoubleLine("Item id:", BreakUpLargeNumbers(link:match('item:(%d+)')))
+	tooltip:Show()
+	return AddSpellInfo(tooltip, "item", GetItemSpell(link), false)
+end
+
+local function AddMacroInfo(tooltip, source, index)
+	if not index or not GetMacroInfo(index) then return end
+	local spellId = GetMacroSpell(index)
+	AddSpellInfo(tooltip, source, spellId, true)
+	local item, link = GetMacroItem(index)
+	return AddItemInfo(tooltip, link or item)
+end
+
+local function AddActionInfo(tooltip, slot)
+	if not slot or IsDisabled() then return end
+	local actionType, id, subType = GetActionInfo(slot)
+	if actionType == "spell" then
+		return AddSpellInfo(tooltip, "action", id, true)
+	elseif actionType == "macro" then
+		-- this might return wrong info if macro names are not unique
+		return AddMacroInfo(tooltip, "macro", GetActionText(slot))
+	elseif actionType == "item" then
+		return AddItemInfo(tooltip, id, true)
+	end
+end
+
+local function AddPetActionInfo(tooltip, slot)
+	if not slot or IsDisabled() then return end
+
+	local _, _, _, _, _, _, id = GetPetActionInfo(slot)
+	return AddSpellInfo(tooltip, "spell", id, true)
+end
+
+local spellIdGetters = {
+	GetUnitAura = function(...)
+		local data = C_UnitAuras.GetAuraDataByIndex(unpack(...))
+		return data and data.spellId
+	end,
+	GetUnitBuff = function(...)
+		local data = C_UnitAuras.GetBuffDataByIndex(unpack(...))
+		return data and data.spellId
+	end,
+	GetUnitDebuff = function(...)
+		local data = C_UnitAuras.GetDebuffDataByIndex(unpack(...))
+		return data and data.spellId
+	end,
+	GetUnitBuffByAuraInstanceID = function(...)
+		local data = C_UnitAuras.GetAuraDataByAuraInstanceID(unpack(...))
+		return data and data.spellId
+	end,
+	GetUnitDebuffByAuraInstanceID = function(...)
+		local data = C_UnitAuras.GetAuraDataByAuraInstanceID(unpack(...))
+		return data and data.spellId
+	end,
+}
+
+local sources = {
+	GetAction = 'action',
+	GetArtifactPowerByID = 'artifact',
+	GetAzeritePower = 'azerite',
+	GetConduit = 'conduit',
+	GetPvpTalent = 'pvp talent',
+	GetSpellBookItem = 'spellbook',
+	GetTraitEntry = 'talent',
+}
+
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
+	AddItemInfo(tooltip, data.id, true)
+end)
+
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Macro, function(tooltip, data)
+	AddActionInfo(tooltip, unpack(tooltip.processingInfo.getterArgs))
+end)
+
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.PetAction, function(tooltip, data)
+	AddPetActionInfo(tooltip, unpack(tooltip.processingInfo.getterArgs))
+end)
+
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Spell, function(tooltip, data)
+	local getterName = tooltip.processingInfo and tooltip.processingInfo.getterName
+	local source = getterName and sources[getterName] or 'spell'
+
+	AddSpellInfo(tooltip, source, data.id, true)
+end)
+
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.UnitAura, function(tooltip, data)
+	if IsDisabled() then return end
+	local info = tooltip and tooltip.processingInfo
+	local getter = info and info.getterName and spellIdGetters[info.getterName]
+	if not getter then return end
+	local ok, id = pcall(getter, info.getterArgs)
+	if not ok then return end
+	AddSpellInfo(tooltip, 'aura', id, true)
+end)
