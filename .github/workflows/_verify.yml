@@ -1,0 +1,93 @@
+# Reusable verification: no secrets, read-only token, one pinned action.
+#
+# Called by ci.yml (every push and PR) and by release.yml (before publishing).
+# Nothing here can reach the CurseForge token, which is the whole point of
+# keeping it in a separate job.
+name: verify
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version label used for the throwaway archive name"
+        type: string
+        default: "0.0.0-ci"
+      dry_run:
+        description: "Also exercise the publish tool without contacting CurseForge"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1, pinned to a commit, credentials not persisted
+        # so no later step can push or read the token from .git/config.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned Lua parser
+        run: |
+          set -euo pipefail
+          python3 -m pip install \
+            --require-hashes --only-binary=:all: --no-cache-dir \
+            --disable-pip-version-check \
+            -r requirements-lint.txt
+          python3 -c "import luaparser; print('luaparser', luaparser.__name__, 'ok')"
+
+      - name: Lua syntax
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from luaparser import ast
+          import pathlib, sys
+
+          bad = []
+          for path in pathlib.Path(".").rglob("*.lua"):
+              if any(part in {".git", "release"} for part in path.parts):
+                  continue
+              try:
+                  ast.parse(path.read_text(encoding="utf-8-sig"))
+              except Exception as exc:
+                  bad.append(f"{path}: {exc}")
+
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("all Lua files parse")
+          PY
+
+      - name: Release tool tests
+        run: |
+          set -euo pipefail
+          python3 tools/test_cf_release.py
+          python3 tools/test_audit_zip.py
+
+      - name: Build archive
+        env:
+          VERSION: ${{ inputs.version }}
+        run: pwsh -NoProfile -NonInteractive -File ./build-zip.ps1 -Version "$VERSION" -OutDir release
+
+      - name: Audit archive
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 tools/audit_zip.py --file "release/AdiButtonAuras-$VERSION.zip"
+
+      - name: Publish tool dry run
+        if: inputs.dry_run
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 tools/cf_release.py \
+            --file "release/AdiButtonAuras-$VERSION.zip" \
+            --version "$VERSION" \
+            --release-type alpha \
+            --dry-run

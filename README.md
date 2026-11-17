@@ -2,6 +2,8 @@
 
 # AdiButtonAuras Forever
 
+[![ci](https://github.com/felippeb/adibuttonauras-forever/actions/workflows/ci.yml/badge.svg)](https://github.com/felippeb/adibuttonauras-forever/actions/workflows/ci.yml)
+
 An unofficial port of [AdiButtonAuras](https://github.com/AdiAddons/AdiButtonAuras) 11.0.4 to
 **WoW Forever** (interface `16001`, game version `1.60.1`).
 

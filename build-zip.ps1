@@ -18,6 +18,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# PowerShell's location and the process working directory are not the same
+# thing, and the .NET compression APIs use the latter. Resolve once, absolutely,
+# so a relative -OutDir behaves the same from any shell and from CI.
+$OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+
 $root = $PSScriptRoot
 $folders = @("AdiButtonAuras", "AdiButtonAuras_Config")
 
