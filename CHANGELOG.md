@@ -1,5 +1,23 @@
 # Changelog
 
+## 11.0.4-forever.2 — 2026-11-18
+
+### Blessings
+
+- Blessings follow the client's **one-blessing-per-paladin-per-target** rule: casting a
+  blessing on yourself removes your previous blessing from the player.
+- A self-cast drops the replaced blessing immediately, and a restricted (combat) read can
+  no longer re-light it; the guard lasts until the replaced copy would have expired.
+- The cast target is taken from `UNIT_SPELLCAST_SENT`, so blessing another player never
+  darkens or remembers a blessing on you.
+- Auras keep `isFromOwnCast`/`sourceUnit` when the client exposes them: a blessing known
+  to come from another paladin is never hidden by your own cast.
+
+### Diagnostics
+
+- `/abaforever auras` prints the last blessing cast on the player (id, name, family,
+  guard) and `own`/`src` for every live aura, to verify cast attribution.
+
 ## 11.0.4-forever.1 — 2026-11-16
 
 First WoW Forever port, based on upstream 11.0.4.

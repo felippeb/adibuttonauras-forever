@@ -34,6 +34,8 @@ remembered only while the client is blind.
 - Seals are matched by **family** (id or display name), so custom ids and different ranks still work.
 - Buffs cast by **other players** on you light your button too — e.g. the other paladin's Blessing of Wisdom.
 - Only the current seal shows: swapping Fury → Light drops Fury immediately, even if the combat read lags.
+- Only one blessing per paladin per target: casting one on yourself drops your previous blessing
+  immediately, even if the combat read lags.
 
 ## What it deliberately does not do
 

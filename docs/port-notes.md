@@ -443,3 +443,44 @@ Fix in `core/AuraTools.lua` - seal identity, not just spell ids:
 - `/abaforever auras` prints `last seal cast: id= name= family= left=`.
 
 Files: `core/AuraTools.lua`, `Forever.lua` (probe). Parse OK, CRLF, no BOM.
+
+## Session 2026-11-18 - blessings replace each other (one per paladin per target)
+
+User report: on this client a paladin can keep only **one blessing of any type per
+target**. Casting Blessing of Freedom on yourself removes your Might/Wisdom/Kings from
+the player; the same applies to every target, always per caster.
+
+The display only reads the player's buffs, so only a blessing that lands on the player
+can affect a button. The risk is the same one seals had: a restricted (combat) read can
+keep reporting the blessing that was just replaced, and the merge only adds auras, so the
+old blessing would stay lit for the rest of its (up to 30 min) duration.
+
+`core/AuraTools.lua`:
+
+- `BLESSING_IDS` + `NormalizeBlessingName` + `BlessingFamily(id, name)`: a blessing is
+  recognised by its display name (`Blessing of ...` / `Greater Blessing of ...`, so
+  custom 1.3M-range ids work) or by a known id. Each blessing is its own family, so
+  casting Freedom does not drop an existing Freedom, but drops every other blessing.
+- `lastBlessing` (id, name, family, `staleUntil`) is set only for a self-cast. The
+  target is not part of `UNIT_SPELLCAST_SUCCEEDED`, so `UNIT_SPELLCAST_SENT` records the
+  target name per `castGUID` and success consumes it. A cast aimed at another unit is
+  neither remembered nor allowed to darken the player's blessing; if the event shape
+  carries no target name, the old remember-only behaviour is kept (no false negatives).
+- `staleUntil` is the expiration of the blessing copy that was actually dropped (bounded
+  by 30 min when no expiration was readable). That is exactly how long a frozen read can
+  keep reporting it; afterwards the re-read copy already carries a past expiration and
+  the rule's remaining-time check keeps it dark.
+- `NoteBlessingCast` drops the replaced blessings from both helpful caches
+  (`PlayerBuff` and `Buff`) immediately, so the button goes dark on the cast itself.
+- `IsStaleBlessing(aura, restricted)` filters the old blessing while building `fresh`,
+  but only while the read is restricted: out of combat the client is authoritative, so a
+  blessing that is still (or newly) there is never hidden.
+- Own-cast attribution: `ProcessAura` stores `aura.own` from `isFromOwnCast`, falling
+  back to `sourceUnit == 'player'`. A blessing known to come from another paladin is
+  never dropped or suppressed by our own cast. Remembered casts are marked `own = true`.
+- `/abaforever auras` now prints `own=`/`src=` per live aura and
+  `last blessing on player: id= name= family= guard=` so the next in-game session can
+  confirm which fields the client exposes and that the target was detected.
+
+Files: `core/AuraTools.lua`, `Forever.lua` (probe), `CHANGELOG.md`. Parse OK, CRLF,
+no BOM. Needs `/reload`; no client restart (no new files).

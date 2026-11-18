@@ -12,7 +12,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "11.0.4-forever.1",
+    [string]$Version = "11.0.4-forever.2",
     [string]$OutDir = (Join-Path $PSScriptRoot "release")
 )
 

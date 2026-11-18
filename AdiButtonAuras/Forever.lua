@@ -511,12 +511,14 @@ _G.SlashCmdList["ABAFOREVER"] = function(msg)
 						local expiration = C.Field(data, "expirationTime")
 						local duration = C.Field(data, "duration")
 						local inst = C.Field(data, "auraInstanceID")
-						OutQuiet(format("  slot %-4s id=%-6s %-28s left=%-8s dur=%-6s inst=%-12s filtered=%s",
+						OutQuiet(format("  slot %-4s id=%-6s %-28s left=%-8s dur=%-6s inst=%-12s filtered=%-5s own=%-5s src=%s",
 							tostring(slots[i]), tostring(spellId),
 							tostring(name):sub(1, 28),
 							tostring(expiration and (expiration - now)),
 							tostring(duration), tostring(inst),
-							tostring(C.IsAuraFilteredOut(unit, inst, filter))))
+							tostring(C.IsAuraFilteredOut(unit, inst, filter)),
+							tostring(C.Field(data, "isFromOwnCast")),
+							tostring(C.Field(data, "sourceUnit"))))
 					end
 				end
 			end
@@ -530,6 +532,12 @@ _G.SlashCmdList["ABAFOREVER"] = function(msg)
 				OutQuiet(format("  last seal cast: id=%s name=%s family=%s left=%s",
 					tostring(seal.id), tostring(seal.name), tostring(seal.family),
 					tostring(seal.left)))
+			end
+			local blessing = state.lastBlessing
+			if blessing then
+				OutQuiet(format("  last blessing on player: id=%s name=%s family=%s guard=%s",
+					tostring(blessing.id), tostring(blessing.name), tostring(blessing.family),
+					tostring(blessing.left)))
 			end
 			for _, cacheState in ipairs(state.caches) do
 				local last = cacheState.last

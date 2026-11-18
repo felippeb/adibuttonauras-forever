@@ -38,6 +38,8 @@ local setmetatable = _G.setmetatable
 local type = _G.type
 local UnitExists = _G.UnitExists
 local UnitGUID = _G.UnitGUID
+local UnitName = _G.UnitName
+local Ambiguate = _G.Ambiguate
 
 local Debug = function(...) addon.Debug('AuraTools', ...) end
 
@@ -175,6 +177,93 @@ local function DropReplacedSeals(self)
 	end
 end
 
+-- Blessings: a paladin can keep only one blessing of any type on a given
+-- target, so casting a new one removes the previous one. Only the player's
+-- buffs are displayed, so only a blessing that lands on the player matters.
+-- UNIT_SPELLCAST_SUCCEEDED does not say who was targeted, so the target name
+-- is taken from UNIT_SPELLCAST_SENT (see the event handler); a cast aimed at
+-- someone else must never darken a blessing the player still has.
+local BLESSING_IDS = {}
+do
+	local families = {
+		{ 'blessing of might', 19740, 19834, 19835, 19836, 19837, 19838, 25291, 25782, 25916 },
+		{ 'blessing of wisdom', 19742, 19850, 19852, 19853, 19854, 25290, 25894, 25918 },
+		{ 'blessing of kings', 20217, 25898 },
+		{ 'blessing of protection', 1022, 5599, 10278 },
+		{ 'blessing of freedom', 1044 },
+		{ 'blessing of salvation', 1038, 25895 },
+		{ 'blessing of sacrifice', 6940 },
+		{ 'blessing of light', 19977, 19978, 19979, 25890 },
+		{ 'blessing of sanctuary', 20911, 25899 },
+	}
+	for _, family in ipairs(families) do
+		for i = 2, #family do
+			BLESSING_IDS[family[i]] = family[1]
+		end
+	end
+end
+
+local function NormalizeBlessingName(name)
+	if type(name) ~= 'string' then return nil end
+	local trimmed = name:gsub('^%s+', ''):gsub('%s+$', ''):lower()
+	if not trimmed:find('^blessing of ') and not trimmed:find('^greater blessing of ') then
+		return nil
+	end
+	return trimmed
+end
+
+--- The blessing a spell/aura belongs to ('blessing of might', ...), or nil.
+local function BlessingFamily(id, name)
+	local fromName = NormalizeBlessingName(name)
+	if fromName then return fromName end
+	return id ~= nil and BLESSING_IDS[id] or nil
+end
+
+local function IsBlessing(id, name)
+	return BlessingFamily(id, name) ~= nil
+end
+
+-- The last blessing we cast on the player. It replaced every other blessing we
+-- had there, and a restricted (combat) read can keep reporting the old one.
+-- `staleUntil` is the moment the replaced copy would have expired on its own;
+-- a later re-read copy carries that same (past) expiration, so the rules'
+-- remaining-time check keeps it dark without further filtering.
+local lastBlessing = nil
+
+--- Remove cached blessings that the last self-cast replaced. Entries known to
+--- come from another player are real even though our own blessing was
+--- replaced, so they are never hidden.
+local function DropReplacedBlessings(cacheFor, includeRemembered)
+	if not lastBlessing or GetTime() >= lastBlessing.staleUntil then
+		return
+	end
+	for k, v in next, cacheFor do
+		if type(k) == 'number' and type(v) == 'table'
+			and (includeRemembered or not v.__remembered) then
+			local family = BlessingFamily(v.id, v.name)
+			if family and family ~= lastBlessing.family and v.own ~= false then
+				del(v)
+				cacheFor[k] = nil
+			end
+		end
+	end
+end
+
+--- A blessing this self-cast replaced, still reported by a restricted read.
+local function IsStaleBlessing(aura, restricted)
+	if not restricted or not lastBlessing or GetTime() >= lastBlessing.staleUntil then
+		return false
+	end
+	-- Out of combat the client is authoritative. If it still reports the old
+	-- blessing, the blessing is real (possibly another paladin's), not a
+	-- frozen read, so never hide it there.
+	local family = BlessingFamily(aura.id, aura.name)
+	if not family or family == lastBlessing.family then
+		return false
+	end
+	return aura.own ~= false
+end
+
 local function ProcessAura(data, aura, unit)
 	local id = Field(data, 'spellId')
 	if not id then
@@ -193,6 +282,18 @@ local function ProcessAura(data, aura, unit)
 	-- Keep the name too: custom Forever ids resolve fine through GetSpellInfo,
 	-- but the name is what the default UI shows, so rules can match on it.
 	aura.name = Field(data, 'name')
+
+	-- Which unit applied the aura, when readable. Blessing replacement must
+	-- not hide another paladin's blessing on the player. `sourceUnit` names the
+	-- caster; `isFromOwnCast` covers builds that omit it.
+	local own = Field(data, 'isFromOwnCast')
+	local source = Field(data, 'sourceUnit')
+	if source == 'player' then
+		own = true
+	elseif own == nil and type(source) == 'string' and source ~= '' then
+		own = false
+	end
+	aura.own = own
 
 	local duration = Field(data, 'duration')
 	if not duration and C_UnitAuras and type(C_UnitAuras.GetAuraDuration) == 'function' then
@@ -259,11 +360,13 @@ local aurasMetatable = {
 		FullUpdate = function (self, unit, filter, isRetry)
 			local restricted = Compat.Restricted and Compat.Restricted() or false
 
-			-- The seal we last cast replaced every other seal on the player.
-			-- Drop those even if the read below fails, otherwise the old seal
-			-- stays lit until its own expiration (the merge only adds auras).
+			-- The seal/blessing we last cast replaced the others on the
+			-- player. Drop those even if the read below fails, otherwise the
+			-- old aura stays lit until its own expiration (the merge only
+			-- adds auras).
 			if unit == 'player' then
 				DropReplacedSeals(self)
+				DropReplacedBlessings(self)
 			end
 
 			local slots = GetAuraSlots(unit, filter)
@@ -319,9 +422,9 @@ local aurasMetatable = {
 						break
 					end
 
-					if IsStaleSeal(aura) then
-						-- The client still reports the seal this cast replaced:
-						-- skip it instead of re-adding it to the cache.
+					if IsStaleSeal(aura) or (unit == 'player' and IsStaleBlessing(aura, restricted)) then
+						-- The client still reports a seal/blessing this cast
+						-- replaced: skip it instead of re-adding it to the cache.
 						del(aura)
 					else
 						fresh[#fresh + 1] = { key = instanceID, aura = aura }
@@ -465,19 +568,79 @@ local cache = setmetatable({}, {
 
 local eventFrame = _G.CreateFrame('Frame')
 
+--- Apply the one-blessing-per-paladin-per-target rule to the player's caches.
+local function NoteBlessingCast(spellID, name, unitAuras)
+	local family = BlessingFamily(spellID, name)
+	if not family then return end
+
+	local now = GetTime()
+	local staleUntil = now
+
+	-- The copy about to be dropped is stale until it would have expired on its
+	-- own. That is how long a restricted (combat) read may keep reporting it.
+	for _, key in ipairs({ 'PlayerBuff', 'Buff' }) do
+		local cacheFor = rawget(unitAuras, key)
+		if cacheFor then
+			for k, v in next, cacheFor do
+				if type(k) == 'number' and type(v) == 'table' then
+					local vfamily = BlessingFamily(v.id, v.name)
+					if vfamily and vfamily ~= family and v.own ~= false then
+						local expiration = v.expiration
+						if type(expiration) == 'number' and expiration > 0 then
+							if expiration > staleUntil then staleUntil = expiration end
+						elseif now + 1800 > staleUntil then
+							-- No readable expiration: bound the guard by the
+							-- longest lifetime a blessing can have (30 min).
+							staleUntil = now + 1800
+						end
+					end
+				end
+			end
+		end
+	end
+
+	lastBlessing = {
+		id = spellID,
+		name = name,
+		family = family,
+		staleUntil = staleUntil,
+	}
+
+	for _, key in ipairs({ 'PlayerBuff', 'Buff' }) do
+		local cacheFor = rawget(unitAuras, key)
+		if cacheFor then
+			DropReplacedBlessings(cacheFor, true)
+		end
+	end
+end
+
 -- Forever: seals and Righteous Fury are hidden from addons while in combat, so a
 -- seal cast during a fight cannot be read back. When our own cast of a tracked
 -- aura succeeds, restart its countdown using the duration last measured for
 -- that spell (see ProcessAura).
-local function NoteCast(unit, spellID)
+local function NoteCast(unit, spellID, selfTarget)
 	if not unit or not spellID then return end
 	local unitAuras = rawget(cache, unit)
-	local playerBuff = unitAuras and rawget(unitAuras, 'PlayerBuff')
-	if not playerBuff then return end
+	if not unitAuras then return end
 
 	local name = Compat.GetSpellName and Compat.GetSpellName(spellID)
 	if name and Compat.IsSecret(name) then name = nil end
 	local isSeal = IsSeal(spellID, name)
+	local isBlessing = IsBlessing(spellID, name)
+
+	-- A blessing cast on another unit is not a buff on the player: do not
+	-- remember it here, and never replace the player's blessing for it. Seals
+	-- and Righteous Fury are self-only, so they are unaffected.
+	if isBlessing then
+		-- false = the cast landed on another unit; nil = the target could not
+		-- be read (event without a target name), so keep the old behaviour and
+		-- only remember the cast.
+		if selfTarget == false then return end
+		if selfTarget then NoteBlessingCast(spellID, name, unitAuras) end
+	end
+
+	local playerBuff = rawget(unitAuras, 'PlayerBuff')
+	if not playerBuff then return end
 
 	-- Seals last 30 seconds on this client and the duration field is not always
 	-- available. Never drop a seal cast just because its duration was never
@@ -534,12 +697,61 @@ local function NoteCast(unit, spellID)
 		count = 1,
 		expiration = GetTime() + duration,
 		dispel = 'Magic',
+		own = true,
 		__remembered = true,
 	}
 	Debug('remembered cast of', spellID, name or '?', 'for', duration, 'seconds')
 end
 
-eventFrame:SetScript('OnEvent', function(self, event, unit, info, extra)
+-- UNIT_SPELLCAST_SUCCEEDED does not carry the cast target, so a blessing cast
+-- records its target name on UNIT_SPELLCAST_SENT and consumes it on success.
+-- Casts that never succeed are dropped after 15 seconds.
+local pendingCasts = {}
+
+local function IsPlayerTarget(target)
+	if target == nil then return nil end
+	local okEmpty, empty = pcall(function() return target == '' end)
+	if not okEmpty or empty then return nil end
+	if Ambiguate then
+		local ok, short = pcall(Ambiguate, target, 'short')
+		if ok and short then target = short end
+	end
+	local playerName
+	if UnitName then
+		local ok, name = pcall(UnitName, 'player')
+		if ok then playerName = name end
+	end
+	local ok, same = pcall(function()
+		return target == 'player' or (playerName ~= nil and target == playerName)
+	end)
+	if not ok then return nil end
+	return same and true or false
+end
+
+local function NoteSpellcastSent(unit, target, castGUID, spellID)
+	if unit ~= 'player' then return end
+
+	if type(spellID) == 'number' then
+		-- args: unitTarget, targetName, castGUID, spellID
+	elseif type(castGUID) == 'number' then
+		-- Some builds omit the target name: unitTarget, castGUID, spellID.
+		target, castGUID, spellID = nil, target, castGUID
+	else
+		return
+	end
+	if not castGUID or not spellID then return end
+
+	local now = GetTime()
+	for guid, cast in next, pendingCasts do
+		if now - cast.at > 15 then pendingCasts[guid] = nil end
+	end
+	local name = Compat.GetSpellName and Compat.GetSpellName(spellID)
+	if name and Compat.IsSecret(name) then name = nil end
+	if not IsBlessing(spellID, name) then return end
+	pendingCasts[castGUID] = { target = target, at = now }
+end
+
+eventFrame:SetScript('OnEvent', function(self, event, unit, info, extra, more)
 	stats.events[event] = (stats.events[event] or 0) + 1
 	if event == 'UNIT_AURA' then
 		if rawget(cache, unit) then
@@ -553,15 +765,25 @@ eventFrame:SetScript('OnEvent', function(self, event, unit, info, extra)
 				unitAuras:Update()
 			end
 		end
+	elseif event == 'UNIT_SPELLCAST_SENT' then
+		-- args: unitTarget, targetName, castGUID, spellID
+		NoteSpellcastSent(unit, info, extra, more)
 	elseif event == 'UNIT_SPELLCAST_SUCCEEDED' then
 		-- args: unitTarget, castGUID, spellID
 		if unit == 'player' then
-			NoteCast('player', extra)
+			local pending = info and pendingCasts[info]
+			if pending then pendingCasts[info] = nil end
+			local selfTarget
+			if pending then
+				selfTarget = IsPlayerTarget(pending.target)
+			end
+			NoteCast('player', extra, selfTarget)
 		end
 	end
 end)
 eventFrame:RegisterEvent('UNIT_AURA')
 eventFrame:RegisterEvent('PLAYER_REGEN_ENABLED')
+eventFrame:RegisterEvent('UNIT_SPELLCAST_SENT')
 eventFrame:RegisterEvent('UNIT_SPELLCAST_SUCCEEDED')
 
 ------------------------------------------------------------------------------
@@ -629,6 +851,14 @@ function addon.AuraTools.DebugState(unit)
 			name = lastSeal.name,
 			family = lastSeal.family,
 			left = lastSeal.expires - now,
+		}
+	end
+	if lastBlessing then
+		state.lastBlessing = {
+			id = lastBlessing.id,
+			name = lastBlessing.name,
+			family = lastBlessing.family,
+			left = lastBlessing.staleUntil - now,
 		}
 	end
 	local unitAuras = rawget(cache, unit)
