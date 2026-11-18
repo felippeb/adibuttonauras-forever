@@ -1,12 +1,14 @@
-# Publishes to CurseForge. Runs only on a version tag or by hand.
+# Publishes GitHub releases (the install path for WowUp and manual users) and,
+# separately and optionally, CurseForge.
 #
-# Trust boundaries, in order of importance:
-#   * verify  — no secrets, contents:read, one pinned action
-#   * publish — environment-gated, the token lives in one step's env only,
-#               and the code that touches it is our own stdlib script
-# Nothing from the network runs in the publish job: no pip, no third-party
-# action, no shell helper. What ships is built from this commit, audited, then
-# uploaded.
+# Trust boundaries:
+#   * meta            — resolves version/type from a tag or input, no checkout
+#   * verify          — no secrets, contents:read, one pinned action
+#   * github-release  — contents:write, no secrets at all, runs on tags
+#   * curseforge      — opt-in per run, environment-gated, token in one step
+#
+# A CurseForge failure cannot break a GitHub release: they are separate jobs
+# with no dependency between them.
 name: release
 
 on:
@@ -23,12 +25,16 @@ on:
         type: choice
         options: [alpha, beta, release]
         default: alpha
-      dry_run:
-        description: "Build, audit and print metadata; upload nothing"
+      publish_curseforge:
+        description: "Also upload to CurseForge (needs approval + token)"
         type: boolean
         default: false
       manual_release:
-        description: "Upload but keep the file held for manual release"
+        description: "CurseForge: keep the file held for manual release"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build, audit and print metadata; publish nothing"
         type: boolean
         default: false
 
@@ -40,32 +46,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    if: github.repository == 'felippeb/adibuttonauras-forever'
-    uses: ./.github/workflows/_verify.yml
-    with:
-      version: ${{ inputs.version || '0.0.0-ci' }}
-      dry_run: ${{ inputs.dry_run || false }}
-
-  publish:
-    needs: verify
-    if: |
-      github.repository == 'felippeb/adibuttonauras-forever' &&
-      !inputs.dry_run
+  meta:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    # Repository secret lives on this environment, with required reviewers and
-    # a branch/tag policy, so a run has to be approved before the token exists.
-    environment: curseforge
-    permissions:
-      contents: write # GitHub release asset
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release_type: ${{ steps.v.outputs.release_type }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
       - name: Resolve version and release type
         id: v
         env:
@@ -80,7 +67,7 @@ jobs:
             version="${REF_NAME#v}"
           fi
           if [ -z "${version}" ]; then
-            echo "::error::no version: pass one, or run from a v* tag"
+            echo "::error::no version: tag it, or pass one"
             exit 1
           fi
           if [ -n "${INPUT_TYPE}" ]; then
@@ -94,14 +81,79 @@ jobs:
           echo "release_type=${release_type}" >> "$GITHUB_OUTPUT"
           echo "resolved ${version} as ${release_type}"
 
+  verify:
+    needs: meta
+    if: github.repository == 'felippeb/adibuttonauras-forever'
+    uses: ./.github/workflows/_verify.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      dry_run: ${{ inputs.dry_run || false }}
+
+  # The primary distribution path. No secrets, no environment, no waiting.
+  github-release:
+    needs: [meta, verify]
+    if: |
+      github.repository == 'felippeb/adibuttonauras-forever' &&
+      github.event_name == 'push' &&
+      inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Build archive
         env:
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ needs.meta.outputs.version }}
         run: pwsh -NoProfile -NonInteractive -File ./build-zip.ps1 -Version "$VERSION" -OutDir release
 
       - name: Audit archive
         env:
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: python3 tools/audit_zip.py --file "release/AdiButtonAuras-$VERSION.zip"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "release/AdiButtonAuras-$VERSION.zip" \
+            --verify-tag \
+            --title "$VERSION" \
+            --generate-notes
+
+  curseforge:
+    needs: [meta, verify]
+    if: |
+      github.repository == 'felippeb/adibuttonauras-forever' &&
+      inputs.publish_curseforge == true &&
+      inputs.dry_run != true &&
+      vars.CURSEFORGE_PROJECT_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: curseforge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build archive
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: pwsh -NoProfile -NonInteractive -File ./build-zip.ps1 -Version "$VERSION" -OutDir release
+
+      - name: Audit archive
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: python3 tools/audit_zip.py --file "release/AdiButtonAuras-$VERSION.zip"
 
       - name: Publish to CurseForge
@@ -110,8 +162,8 @@ jobs:
           CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
           CF_GAME_VERSIONS: ${{ vars.CF_GAME_VERSIONS }}
           CF_GAME_VERSION_NAME: ${{ vars.CF_GAME_VERSION_NAME || '1.60.1' }}
-          VERSION: ${{ steps.v.outputs.version }}
-          RELEASE_TYPE: ${{ steps.v.outputs.release_type }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          RELEASE_TYPE: ${{ needs.meta.outputs.release_type }}
           MANUAL: ${{ inputs.manual_release }}
         run: |
           set -euo pipefail
@@ -122,14 +174,3 @@ jobs:
             args+=(--manual-release)
           fi
           python3 tools/cf_release.py "${args[@]}"
-
-      - name: GitHub release
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.v.outputs.version }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          gh release create "$TAG" "release/AdiButtonAuras-$VERSION.zip" \
-            --verify-tag --title "$VERSION" --generate-notes

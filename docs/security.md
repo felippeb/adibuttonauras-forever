@@ -15,11 +15,14 @@ push / PR ──► verify job          (contents: read, no secrets)
                  ├─ zip built by build-zip.ps1
                  └─ archive audited for secrets, paths, stray files
 
-tag / manual ──► publish job      (environment: curseforge, contents: write)
+tag ──► github-release job   (contents: write, no secrets)
                  ├─ zip rebuilt from the same commit
                  ├─ archive audited again
-                 ├─ upload via tools/cf_release.py (stdlib only)
-                 └─ gh release create
+                 └─ gh release create  ← the WowUp / manual install path
+
+manual + opt-in ──► curseforge job  (environment: curseforge, token)
+                 ├─ zip rebuilt and audited
+                 └─ upload via tools/cf_release.py (stdlib only)
 ```
 
 The publish job installs nothing and runs no third-party action. Everything it

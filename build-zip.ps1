@@ -53,8 +53,27 @@ try {
             ForEach-Object {
                 # Forward slashes and the addon folder at the archive root.
                 $entryName = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-                    $archive, $_.FullName, $entryName) | Out-Null
+
+                if ($_.Extension -eq '.toc') {
+                    # Stamp the release version into the shipped TOC, so addon
+                    # managers (WowUp, CurseForge) see the same version the tag
+                    # and the asset name advertise. Written without a BOM.
+                    $text = [System.IO.File]::ReadAllText($_.FullName)
+                    $text = [regex]::Replace($text, '(?m)^##\s*Version\s*:.*$', "## Version: $Version")
+                    $entry = $archive.CreateEntry($entryName)
+                    $stream = $entry.Open()
+                    try {
+                        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($text)
+                        $stream.Write($bytes, 0, $bytes.Length)
+                    }
+                    finally {
+                        $stream.Dispose()
+                    }
+                }
+                else {
+                    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                        $archive, $_.FullName, $entryName) | Out-Null
+                }
             }
     }
 }

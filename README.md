@@ -46,11 +46,15 @@ remembered only while the client is blind.
 
 ## Install
 
-1. Download the latest zip from [Releases](../../releases).
-2. Extract it so that `Interface\AddOns\AdiButtonAuras\` and
-   `Interface\AddOns\AdiButtonAuras_Config\` exist as siblings.
-3. Restart the client — new folders are only read at startup.
-4. After editing any `.lua`, `/reload` is enough.
+**WowUp-CF:** *Install* → *From URL* →
+`https://github.com/felippeb/adibuttonauras-forever`. Updates come from this
+repository's releases; the shipped TOC carries the release version, so version
+comparison works the way WowUp expects.
+
+**Manual:** download the zip from [Releases](../../releases) and extract it so
+that `Interface\AddOns\AdiButtonAuras\` and `Interface\AddOns\AdiButtonAuras_Config\`
+exist as siblings, then restart the client — new folders are only read at
+startup. Editing any `.lua` afterwards only needs `/reload`.
 
 ## Diagnostics
 
